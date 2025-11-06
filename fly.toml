@@ -1,16 +1,14 @@
-# El nombre de tu aplicación en Fly.io
-app = "consulta-pe-webhooks-api"
-
-# El builder a usar (usaremos Dockerfile)
+# El nombre de tu aplicación en Fly.io (usado en el comando)
+app = "pago-planes-consulta-pe"
 kill_signal = "SIGINT"
 kill_timeout = 5
-primary_region = "lim" # Asumiendo Lima (Perú) como región principal
+primary_region = "iad" # Usando 'iad' (región default) o puedes cambiar a 'lim' si es tu principal
 
-[build]
-  builder = "heroku/buildpacks:20"
+# 🛑 IMPORTANTE: La sección [build] se ELIMINA COMPLETAMENTE.
+# Esto fuerza a Fly.io a usar el Dockerfile que creaste, evitando el Buildpack obsoleto.
 
 [env]
-  PORT = "8080" # Establecemos el puerto por defecto para que coincida con index.js
+  PORT = "8080" # El puerto que usa express en index.js
 
 [[services]]
   http_checks = []
