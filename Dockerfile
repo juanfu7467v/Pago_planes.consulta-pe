@@ -1,21 +1,21 @@
-# syntax=docker/dockerfile:1
+# Usa una imagen base de Node.js ligera
+FROM node:18-slim
 
-# Etapa base
-FROM node:20.18.0-slim AS base
-WORKDIR /app
-ENV NODE_ENV=production
+# Crea y establece el directorio de trabajo dentro del contenedor
+WORKDIR /usr/src/app
 
-# Etapa de compilación
-FROM base AS build
-RUN apt-get update -qq && \
-    apt-get install --no-install-recommends -y build-essential python-is-python3
+# Copia los archivos de definición de dependencias
+COPY package*.json ./
 
-COPY package.json ./
-RUN npm install --omit=dev
+# Instala las dependencias del proyecto
+RUN npm install
+
+# Copia el código fuente de la aplicación
 COPY . .
 
-# Imagen final
-FROM base
-COPY --from=build /app /app
+# Expone el puerto que la aplicación escuchará
+# NOTA: Aunque el servidor escucha en $PORT (8080), esta línea es informativa.
 EXPOSE 8080
-CMD ["npm", "run", "start"]
+
+# Comando para iniciar la aplicación
+CMD [ "npm", "start" ]
