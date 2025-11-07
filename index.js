@@ -89,9 +89,10 @@ if (!GITHUB_TOKEN || !GITHUB_REPO) {
     console.warn("⚠️ Variables GITHUB_TOKEN o GITHUB_REPO no configuradas. El guardado en GitHub estará deshabilitado.");
 }
 
-// 🔥 CORRECCIÓN de inicialización de Mercado Pago
+// 🔥 CORRECCIÓN de inicialización de Mercado Pago (Esta sección reemplaza las líneas que fallaban)
 let mpClient;
 if (MERCADOPAGO_ACCESS_TOKEN) {
+  // Utilizamos new MercadoPagoConfig para inicializar el SDK v2.x
   mpClient = new MercadoPagoConfig({ 
     accessToken: MERCADOPAGO_ACCESS_TOKEN,
     // Opciones adicionales si son necesarias
@@ -347,13 +348,13 @@ Tus **${creditosAntes}** créditos restantes siguen disponibles. (¡Es tu compra
  * Crea una preferencia de pago en Mercado Pago.
  */
 async function createMercadoPagoPreference(amount, uid, email, description) {
-  // 🔥 CORRECCIÓN: Verifica si el cliente mpClient existe
+  // 🔥 CORRECCIÓN: Usamos mpClient y Preference
   if (!mpClient) {
     throw new Error("Mercado Pago SDK no configurado. Falta Access Token.");
   }
   
   const externalReference = `MP-${uid}-${Date.now()}`;
-  const preference = new Preference(mpClient); // Crea una instancia de Preference usando el cliente
+  const preference = new Preference(mpClient); // Usa la clase Preference con el cliente inicializado
 
   const response = await preference.create({
     body: {
