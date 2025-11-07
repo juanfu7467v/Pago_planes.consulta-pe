@@ -5,7 +5,8 @@ import moment from "moment-timezone"; // Para manejo profesional de fechas/horas
 import axios from "axios"; // ⬅️ Necesitas instalar esto: npm install axios
 
 // Dependencias de Pago
-import mercadopago from "mercadopago";
+// 🔥 CORRECCIÓN: Usar la importación correcta para el SDK de MP v2.x en módulos ESM
+import { MercadoPagoConfig, Preference } from "mercadopago"; 
 // import flow from "flow-node-sdk"; 
 
 const app = express();
@@ -88,14 +89,18 @@ if (!GITHUB_TOKEN || !GITHUB_REPO) {
     console.warn("⚠️ Variables GITHUB_TOKEN o GITHUB_REPO no configuradas. El guardado en GitHub estará deshabilitado.");
 }
 
-
-// Inicialización de Mercado Pago SDK
+// 🔥 CORRECCIÓN de inicialización de Mercado Pago
+let mpClient;
 if (MERCADOPAGO_ACCESS_TOKEN) {
-  mercadopago.configure({ access_token: MERCADOPAGO_ACCESS_TOKEN });
+  mpClient = new MercadoPagoConfig({ 
+    accessToken: MERCADOPAGO_ACCESS_TOKEN,
+    // Opciones adicionales si son necesarias
+  });
   console.log("🟢 Mercado Pago SDK configurado.");
 } else {
   console.warn("⚠️ MERCADOPAGO_ACCESS_TOKEN no encontrado.");
 }
+
 
 // Inicialización de Flow SDK (Mock o Real)
 let flowClient = null;
@@ -141,22 +146,16 @@ const PLANES_ILIMITADOS = {
 // =======================================================
 /**
  * Calcula los créditos de cortesía basados en el número de compras exitosas.
- * - 1ra compra: 2 créditos
- * - 2da compra: 3 créditos
- * - 3ra compra: 4 créditos, etc. (Máximo 5 para evitar abusos, por ejemplo)
  * @param {number} numComprasExitosa - El número de compras que lleva el usuario (antes de esta compra).
  * @returns {number} - Créditos de cortesía a otorgar.
  */
 function calcularCreditosCortesia(numComprasExitosa) {
-    // Si es la primera compra (numComprasExitosa = 0), se otorga 2
-    // Si es la segunda compra (numComprasExitosa = 1), se otorga 3
+    // Si es la 1ra compra (0 antes), otorga 2. Si es la 2da (1 antes), otorga 3, etc.
     const creditosBase = 2;
     let creditos = creditosBase + numComprasExitosa;
     
     // Opcional: Limitar los créditos de cortesía (ej. máximo 5)
-    // return Math.min(creditos, 5); 
-
-    return creditos;
+    return Math.min(creditos, 5); 
 }
 
 // =======================================================
@@ -164,11 +163,6 @@ function calcularCreditosCortesia(numComprasExitosa) {
 // =======================================================
 /**
  * Guarda los detalles de la compra en un archivo log en GitHub.
- * @param {string} uid - ID de usuario.
- * @param {string} email - Email del usuario.
- * @param {number} montoPagado - Monto pagado.
- * @param {string} processor - Procesador de pago.
- * @param {number} numCompras - Número de compra exitosa.
  */
 async function savePurchaseToGithub(uid, email, montoPagado, processor, numCompras) {
     if (!GITHUB_TOKEN || !GITHUB_REPO) {
@@ -191,9 +185,8 @@ async function savePurchaseToGithub(uid, email, montoPagado, processor, numCompr
             sha = response.data.sha;
             existingContent = Buffer.from(response.data.content, 'base64').toString('utf8');
         } catch (error) {
-            // Si el archivo no existe (status 404), 'sha' será null y 'existingContent' vacío, lo cual es correcto.
             if (error.response && error.response.status !== 404) {
-                 throw error; // Re-lanzar otros errores que no sean 404
+                 throw error;
             }
         }
         
@@ -206,7 +199,7 @@ async function savePurchaseToGithub(uid, email, montoPagado, processor, numCompr
         await axios.put(githubApiUrl, {
             message: commitMessage,
             content: contentBase64,
-            sha: sha // Necesario si estás actualizando un archivo existente
+            sha: sha
         }, {
             headers: { 'Authorization': `token ${GITHUB_TOKEN}` }
         });
@@ -227,17 +220,12 @@ async function savePurchaseToGithub(uid, email, montoPagado, processor, numCompr
 // =======================================================
 /**
  * Otorga el beneficio (créditos o plan) al usuario después de la confirmación de pago.
- * @param {string} uid - ID de usuario de Firebase.
- * @param {string} email - Email del usuario.
- * @param {number} montoPagado - Monto pagado en soles (PEN).
- * @param {string} processor - Procesador de pago (ej. 'Mercado Pago', 'Flow').
- * @returns {Promise<object>} - Objeto con el tipo de plan y el mensaje de confirmación.
  */
 async function otorgarBeneficio(uid, email, montoPagado, processor) {
   if (!db) throw new Error("Firestore no inicializado.");
 
   const usuariosRef = db.collection("usuarios");
-  let userDoc = usuariosRef.doc(uid); // Simplificamos asumiendo que el UID es la clave
+  let userDoc = usuariosRef.doc(uid); 
 
   const doc = await userDoc.get();
   if (!doc.exists) throw new Error("Documento de usuario no existe en Firestore.");
@@ -278,7 +266,7 @@ async function otorgarBeneficio(uid, email, montoPagado, processor) {
       updateData.ultimaCompraCreditos = creditosOtorgadosTotal;
       updateData.tipoPlan = 'creditos_paquete';
     } else {
-      // Lógica de extensión de plan ilimitado (mantenida de la versión anterior)
+      // Lógica de extensión de plan ilimitado
       const fechaActual = moment();
       let fechaFinActual = userDataBefore.fechaFinIlimitado ? moment(userDataBefore.fechaFinIlimitado.toDate()) : fechaActual;
       const fechaInicio = fechaFinActual.isAfter(fechaActual) ? fechaFinActual : fechaActual;
@@ -291,7 +279,7 @@ async function otorgarBeneficio(uid, email, montoPagado, processor) {
       updateData.ultimaCompraCreditos = 0;
     }
     
-    updateData.numComprasExitosa = numComprasNueva; // ⬅️ Actualizamos el contador de compras
+    updateData.numComprasExitosa = numComprasNueva;
     updateData.ultimaCompraMonto = montoPagado;
     updateData.fechaUltimaCompra = admin.firestore.FieldValue.serverTimestamp();
 
@@ -359,26 +347,31 @@ Tus **${creditosAntes}** créditos restantes siguen disponibles. (¡Es tu compra
  * Crea una preferencia de pago en Mercado Pago.
  */
 async function createMercadoPagoPreference(amount, uid, email, description) {
-  if (!mercadopago.configurations.access_token) {
+  // 🔥 CORRECCIÓN: Verifica si el cliente mpClient existe
+  if (!mpClient) {
     throw new Error("Mercado Pago SDK no configurado. Falta Access Token.");
   }
+  
   const externalReference = `MP-${uid}-${Date.now()}`;
+  const preference = new Preference(mpClient); // Crea una instancia de Preference usando el cliente
 
-  const preference = {
-    items: [{ title: description, unit_price: amount, quantity: 1, currency_id: "PEN" }],
-    payer: { email: email },
-    back_urls: {
-      success: `${HOST_URL}/api/mercadopago?monto=${amount}&uid=${uid}&email=${email}&estado=approved&ref=${externalReference}`,
-      failure: `${HOST_URL}/api/mercadopago?monto=${amount}&uid=${uid}&email=${email}&estado=rejected&ref=${externalReference}`,
-      pending: `${HOST_URL}/api/mercadopago?monto=${amount}&uid=${uid}&email=${email}&estado=pending&ref=${externalReference}`,
-    },
-    auto_return: "approved",
-    external_reference: externalReference,
-    payment_methods: { installments: 1 },
-  };
-
-  const response = await mercadopago.preferences.create(preference);
-  return response.body.init_point;
+  const response = await preference.create({
+    body: {
+      items: [{ title: description, unit_price: amount, quantity: 1, currency_id: "PEN" }],
+      payer: { email: email },
+      back_urls: {
+        success: `${HOST_URL}/api/mercadopago?monto=${amount}&uid=${uid}&email=${email}&estado=approved&ref=${externalReference}`,
+        failure: `${HOST_URL}/api/mercadopago?monto=${amount}&uid=${uid}&email=${email}&estado=rejected&ref=${externalReference}`,
+        pending: `${HOST_URL}/api/mercadopago?monto=${amount}&uid=${uid}&email=${email}&estado=pending&ref=${externalReference}`,
+      },
+      auto_return: "approved",
+      external_reference: externalReference,
+      payment_methods: { installments: 1 },
+    }
+  });
+  
+  // Retorna la URL de redirección (init_point)
+  return response.init_point;
 }
 
 /**
@@ -417,7 +410,6 @@ app.get("/api/init/mercadopago/:amount", async (req, res) => {
     if (!uid || !email) return res.status(400).json({ message: "Faltan 'uid' y 'email' en la query." });
     if (![10, 20].includes(amount)) return res.status(400).json({ message: "Monto no válido para Mercado Pago (solo S/ 10, S/ 20)." });
     
-    // Nota: Los créditos de cortesía se calcularán dinámicamente en 'otorgarBeneficio'
     const creditos = PAQUETES_CREDITOS[amount]; 
     const description = `Paquete de ${creditos} créditos`;
 
