@@ -1,15 +1,19 @@
 {
-  "name": "consulta-pe-webhooks",
+  "name": "pago-planes-consulta-pe",
   "version": "1.0.0",
-  "description": "API para procesar webhooks de pago y actualizar créditos de usuario en Firestore.",
+  "description": "Servidor para procesar pagos y otorgar créditos en Consulta PE",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
+    "express": "^4.19.2",
     "cors": "^2.8.5",
-    "express": "^4.18.2",
-    "firebase-admin": "^11.12.0"
+    "firebase-admin": "11.11.1"
   },
-  "type": "module"
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
 }
