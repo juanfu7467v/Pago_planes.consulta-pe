@@ -1,6 +1,7 @@
 import express from "express";
 import admin from "firebase-admin";
 import cors from "cors";
+import flow from "flow-node-sdk"; // asegúrate de tenerlo en package.json si lo usas
 
 const app = express();
 app.use(cors());
@@ -14,10 +15,6 @@ function buildServiceAccountFromEnv() {
     try {
       const saRaw = process.env.FIREBASE_SERVICE_ACCOUNT;
       const sa = JSON.parse(saRaw);
-      if (!sa.project_id || typeof sa.project_id !== "string") {
-        console.error("❌ FIREBASE_SERVICE_ACCOUNT no contiene project_id válido.");
-        return null;
-      }
       if (sa.private_key && sa.private_key.includes("\\n")) {
         sa.private_key = sa.private_key.replace(/\\n/g, "\n");
       }
@@ -29,7 +26,7 @@ function buildServiceAccountFromEnv() {
   }
 
   if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL) {
-    const sa = {
+    return {
       type: process.env.FIREBASE_TYPE || "service_account",
       project_id: process.env.FIREBASE_PROJECT_ID,
       private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
@@ -42,13 +39,7 @@ function buildServiceAccountFromEnv() {
       token_uri: process.env.FIREBASE_TOKEN_URI,
       auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
       client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
-      universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN,
     };
-    if (!sa.project_id || !sa.private_key || !sa.client_email) {
-      console.error("❌ Faltan variables FIREBASE_* obligatorias.");
-      return null;
-    }
-    return sa;
   }
 
   console.error("❌ No se encontró configuración de Firebase.");
@@ -76,7 +67,15 @@ try {
 }
 
 // =======================================================
-// 🎯 Configuración de paquetes
+// 💳 Configuración de Flow y Mercado Pago
+// =======================================================
+const FLOW_API_KEY = process.env.FLOW_API_KEY;
+const FLOW_SECRET_KEY = process.env.FLOW_SECRET_KEY;
+const MERCADOPAGO_PUBLIC_KEY = process.env.MERCADOPAGO_PUBLIC_KEY;
+const MERCADOPAGO_ACCESS_TOKEN = process.env.MERCADOPAGO_ACCESS_TOKEN;
+
+// =======================================================
+// 🎯 Configuración de paquetes de créditos y planes
 // =======================================================
 const PAQUETES_CREDITOS = {
   10: 60,
@@ -88,11 +87,11 @@ const PAQUETES_CREDITOS = {
 const CREDITOS_CORTESIA = 3;
 
 const PLANES_ILIMITADOS = {
-  60: 7,    // 7 días
-  80: 15,   // 15 días
-  110: 30,  // 30 días
-  160: 60,  // 60 días
-  510: 70,  // 70 días
+  60: 7,
+  80: 15,
+  110: 30,
+  160: 60,
+  510: 70,
 };
 
 // =======================================================
@@ -158,8 +157,10 @@ async function otorgarBeneficio(uid, email, montoPagado) {
 }
 
 // =======================================================
-// 🌐 Endpoints compatibles con AppCreator24 (GET)
+// 🌐 Endpoints para pagos
 // =======================================================
+
+// Mercado Pago
 app.get("/api/mercadopago", async (req, res) => {
   try {
     const { uid, email, monto, estado } = req.query;
@@ -176,6 +177,7 @@ app.get("/api/mercadopago", async (req, res) => {
   }
 });
 
+// Flow
 app.get("/api/flow", async (req, res) => {
   try {
     const { uid, email, monto, estado } = req.query;
@@ -194,13 +196,16 @@ app.get("/api/flow", async (req, res) => {
 
 // Endpoint de prueba
 app.get("/", (req, res) => {
-  res.json({ status: "ok", firebaseInitialized: !!db });
+  res.json({
+    status: "ok",
+    firebaseInitialized: !!db,
+    flowConfigured: !!FLOW_API_KEY,
+    mercadopagoConfigured: !!MERCADOPAGO_ACCESS_TOKEN,
+  });
 });
 
 // =======================================================
 // 🚀 Servidor
 // =======================================================
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, "0.0.0.0", () =>
-  console.log(`🚀 Servidor ejecutándose en puerto ${PORT}`)
-);
+app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Servidor corriendo en puerto ${PORT}`));
