@@ -1,21 +1,27 @@
-# 1. Usa una imagen base oficial de Node.js (versión 20 estable y ligera)
+# 1️⃣ Imagen base estable y ligera de Node.js
 FROM node:20-slim
 
-# 2. Crea y establece el directorio de la aplicación
+# 2️⃣ Instala dependencias del sistema necesarias para compilar módulos nativos
+RUN apt-get update && apt-get install -y \
+  python3 \
+  make \
+  g++ \
+  && rm -rf /var/lib/apt/lists/*
+
+# 3️⃣ Define el directorio de trabajo
 WORKDIR /app
 
-# 3. Copia solo el archivo package.json
-# (El package-lock.json se copiará si existe, pero no es obligatorio)
-COPY package.json ./
+# 4️⃣ Copia package.json y package-lock.json (si existe)
+COPY package*.json ./
 
-# 4. Instala las dependencias
-RUN npm install --silent
+# 5️⃣ Instala las dependencias con seguridad
+RUN npm install --legacy-peer-deps --no-audit --no-fund
 
-# 5. Copia el resto de los archivos (index.js, fly.toml, etc.)
+# 6️⃣ Copia el resto de los archivos del proyecto
 COPY . .
 
-# 6. Expone el puerto que usa tu aplicación (8080 en index.js)
+# 7️⃣ Expone el puerto (usa el mismo que tu servidor, ej. 8080)
 EXPOSE 8080
 
-# 7. Comando para iniciar la aplicación
-CMD [ "npm", "start" ]
+# 8️⃣ Comando de arranque
+CMD ["npm", "start"]
