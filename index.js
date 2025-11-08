@@ -3,7 +3,8 @@ import admin from "firebase-admin";
 import cors from "cors";
 import moment from "moment-timezone"; 
 import axios from "axios"; 
-import crypto from "crypto"; // ⬅️ Necesitas instalar esto: npm install crypto
+// crypto ya no es estrictamente necesario sin Flow, pero lo dejamos por si acaso.
+import crypto from "crypto"; 
 
 // Dependencias de Pago
 // Usar la importación correcta para el SDK de MP v2.x en módulos ESM
@@ -75,8 +76,7 @@ try {
 // =======================================================
 // 💳 Configuración de Pago y GitHub
 // =======================================================
-const FLOW_API_KEY = process.env.FLOW_API_KEY;
-const FLOW_SECRET_KEY = process.env.FLOW_SECRET_KEY;
+// ❌ Eliminadas: FLOW_API_KEY y FLOW_SECRET_KEY
 const MERCADOPAGO_ACCESS_TOKEN = process.env.MERCADOPAGO_ACCESS_TOKEN;
 
 // URL de Fly.io
@@ -102,17 +102,7 @@ if (MERCADOPAGO_ACCESS_TOKEN) {
   console.warn("⚠️ MERCADOPAGO_ACCESS_TOKEN no encontrado.");
 }
 
-
-// 🔥 CORRECCIÓN CRUCIAL: Configuración de Flow API real
-// La URL de API de Flow. Usamos el endpoint de sandbox por defecto
-const FLOW_API_BASE_URL = 'https://sandbox.flow.cl/api'; 
-const FLOW_PAYMENT_URL = 'https://sandbox.flow.cl/app/payment/init'; 
-
-if (FLOW_API_KEY && FLOW_SECRET_KEY) {
-  console.log("🟢 Flow Client configurado para usar API real (Sandbox).");
-} else {
-  console.warn("⚠️ Flow API Keys no encontrados. La funcionalidad de Flow estará deshabilitada.");
-}
+// ❌ Eliminada la configuración de Flow API real
 
 
 // =======================================================
@@ -362,99 +352,41 @@ async function createMercadoPagoPreference(amount, uid, email, description) {
   return response.init_point;
 }
 
-/**
- * Genera la firma S para Flow.
- * @param {object} params - Parámetros del pago.
- * @returns {string} - La firma HMAC SHA256 en hexadecimal.
- */
-function generateFlowSignature(params, secretKey) {
-    // 1. Convertir el objeto a una cadena Query String (key1=val1&key2=val2...)
-    const keys = Object.keys(params).sort();
-    let query = '';
-    for (const key of keys) {
-        if (params[key] !== undefined && params[key] !== null) {
-            query += `${key}=${params[key]}&`;
-        }
-    }
-    // Eliminar el último '&'
-    query = query.slice(0, -1); 
+// ❌ Eliminadas: generateFlowSignature, createFlowPayment
 
-    // 2. Firmar la cadena usando HMAC SHA256 con la Secret Key
-    const hmac = crypto.createHmac('sha256', secretKey);
-    hmac.update(query);
-    return hmac.digest('hex');
-}
-
-
-/**
- * Crea un pago con Flow (API real).
- */
-async function createFlowPayment(amount, uid, email, subject) {
-  if (!FLOW_API_KEY || !FLOW_SECRET_KEY) {
-    throw new Error("Flow API Keys no configurados. Verifica FLOW_API_KEY y FLOW_SECRET_KEY.");
-  }
-  const commerceOrder = `FLOW-${uid}-${Date.now()}`;
-
-  // Usar HOST_URL para urlReturn y urlConfirmation
-  const urlReturn = `${HOST_URL}/api/flow?monto=${amount}&uid=${uid}&email=${email}&estado=pagado&ref=${commerceOrder}`;
-  const urlConfirmation = `${HOST_URL}/api/flow/confirmation`;
-
-  const paymentData = {
-    apiKey: FLOW_API_KEY,
-    commerceOrder: commerceOrder,
-    subject: subject,
-    amount: amount,
-    email: email,
-    currency: "PEN", 
-    urlConfirmation: urlConfirmation, 
-    urlReturn: urlReturn,
-  };
-
-  // Generar la firma
-  const s = generateFlowSignature(paymentData, FLOW_SECRET_KEY);
-  
-  // Añadir la firma al payload del POST
-  const flowPayload = {
-    ...paymentData,
-    s: s
-  };
-
-  try {
-      const apiResponse = await axios.post(`${FLOW_API_BASE_URL}/payment/create`, flowPayload, {
-          headers: {
-              'Content-Type': 'application/x-www-form-urlencoded' // Flow espera x-www-form-urlencoded
-          },
-          // Convertir el objeto a URLSearchParams para enviarlo como x-www-form-urlencoded
-          data: new URLSearchParams(flowPayload).toString(),
-      });
-      
-      const { url, token } = apiResponse.data;
-      
-      // La URL de redirección final es la base de Flow + el token
-      return `${FLOW_PAYMENT_URL}?token=${token}`; 
-
-  } catch (error) {
-      console.error("Error al llamar a la API de Flow:", error.response ? error.response.data : error.message);
-      throw new Error(`Fallo en Flow API: ${error.response ? error.response.data.message : error.message}`);
-  }
-}
 
 // =======================================================
 // 🌐 Endpoints de INICIACIÓN de Pago 
 // =======================================================
 
-// ➡️ Endpoint Unificado para iniciar pagos con Mercado Pago (S/ 10, S/ 20)
+// ➡️ Endpoint Unificado para iniciar **TODOS** los pagos con Mercado Pago
 app.get("/api/init/mercadopago/:amount", async (req, res) => {
   try {
     const amount = Number(req.params.amount);
     const { uid, email } = req.query;
 
     if (!uid || !email) return res.status(400).json({ message: "Faltan 'uid' y 'email' en la query." });
-    if (![10, 20].includes(amount)) return res.status(400).json({ message: "Monto no válido para Mercado Pago (solo S/ 10, S/ 20)." });
     
-    const creditos = PAQUETES_CREDITOS[amount]; 
-    const description = `Paquete de ${creditos} créditos`;
+    // Obtener todos los montos válidos para verificación
+    const creditosMontos = Object.keys(PAQUETES_CREDITOS).map(m => Number(m));
+    const ilimitadoMontos = Object.keys(PLANES_ILIMITADOS).map(m => Number(m));
+    const montosValidos = new Set([...creditosMontos, ...ilimitadoMontos]);
 
+    if (!montosValidos.has(amount)) {
+        return res.status(400).json({ 
+            message: `Monto S/ ${amount} no válido. Los montos válidos son: ${[...montosValidos].sort((a,b) => a-b).join(', ')}.` 
+        });
+    }
+
+    let description = "";
+    if (PAQUETES_CREDITOS[amount]) {
+        const creditos = PAQUETES_CREDITOS[amount]; 
+        description = `Paquete de ${creditos} créditos`;
+    } else if (PLANES_ILIMITADOS[amount]) {
+        const dias = PLANES_ILIMITADOS[amount];
+        description = `Plan Ilimitado por ${dias} días`;
+    }
+    
     const redirectUrl = await createMercadoPagoPreference(amount, uid, email, description);
 
     res.json({ ok: true, processor: "Mercado Pago", amount: amount, description: description, redirectUrl: redirectUrl });
@@ -464,47 +396,8 @@ app.get("/api/init/mercadopago/:amount", async (req, res) => {
   }
 });
 
-// ➡️ Endpoint Unificado para iniciar pagos de Créditos con Flow (S/ 50, S/ 100, S/ 200)
-app.get("/api/init/flow/creditos/:amount", async (req, res) => {
-  try {
-    const amount = Number(req.params.amount);
-    const { uid, email } = req.query;
+// ❌ Eliminados: /api/init/flow/creditos, /api/init/flow/ilimitado
 
-    if (!uid || !email) return res.status(400).json({ message: "Faltan 'uid' y 'email' en la query." });
-    if (![50, 100, 200].includes(amount)) return res.status(400).json({ message: "Monto no válido para Flow Créditos." });
-
-    const creditos = PAQUETES_CREDITOS[amount];
-    const description = `Paquete de ${creditos} créditos - Flow`;
-
-    const redirectUrl = await createFlowPayment(amount, uid, email, description);
-
-    res.json({ ok: true, processor: "Flow", amount: amount, description: description, redirectUrl: redirectUrl });
-  } catch (e) {
-    console.error("Error en /api/init/flow/creditos:", e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ➡️ Endpoint Unificado para iniciar pagos de Plan Ilimitado con Flow
-app.get("/api/init/flow/ilimitado/:amount", async (req, res) => {
-  try {
-    const amount = Number(req.params.amount);
-    const { uid, email } = req.query;
-
-    if (!uid || !email) return res.status(400).json({ message: "Faltan 'uid' y 'email' en la query." });
-    if (!PLANES_ILIMITADOS[amount]) return res.status(400).json({ message: "Monto no válido para Plan Ilimitado." });
-
-    const dias = PLANES_ILIMITADOS[amount];
-    const description = `Plan Ilimitado por ${dias} días - Flow`;
-
-    const redirectUrl = await createFlowPayment(amount, uid, email, description);
-
-    res.json({ ok: true, processor: "Flow", amount: amount, description: description, redirectUrl: redirectUrl });
-  } catch (e) {
-    console.error("Error en /api/init/flow/ilimitado:", e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
 
 // =======================================================
 // 🔔 Endpoints de Notificación/Callback (Otorga Beneficio)
@@ -530,77 +423,25 @@ app.get("/api/mercadopago", async (req, res) => {
   }
 });
 
-// ➡️ Flow (Recibe estado final del pago)
-app.get("/api/flow", async (req, res) => {
-  const { uid, email, monto, estado } = req.query;
-
-  try {
-    if (!email || !uid || !monto) return res.redirect("/payment/error?msg=Faltan_datos_en_el_callback");
-    
-    // NOTA: Flow siempre retorna a esta URL. El estado debe ser verificado en la confirmación POST
-    // Para simplificar, asumimos que si llegamos aquí, el pago fue iniciado correctamente.
-    // La verificación real se hace en el endpoint POST.
-    if (estado !== "pagado" && estado !== "paid") {
-         // Si usaras la API real, el estado no es 'pagado' sino que lo obtienes de Flow.
-         // Manteniendo tu lógica:
-         return res.redirect(`/payment/rejected?status=${estado}`); 
-    }
-    
-    // Aquí es donde harías una consulta GET a Flow para confirmar el estado final con el token
-    // Por simplicidad y consistencia con tu lógica:
-    const result = await otorgarBeneficio(uid, email, Number(monto), 'Flow');
-    
-    const encodedMessage = encodeURIComponent(JSON.stringify(result.message));
-    res.redirect(`/payment/success?msg=${encodedMessage}`);
-
-  } catch (e) {
-    console.error("Error en /api/flow:", e.message);
-    res.redirect(`/payment/error?msg=${encodeURIComponent(e.message)}`);
-  }
-});
-
-// ⚠️ Endpoint de confirmación de servidor a servidor de Flow (POST)
-app.post("/api/flow/confirmation", (req, res) => {
-    // 🔥 Aquí debes verificar la firma (S) y el estado del pago (status)
-    // Usar generateFlowSignature con los datos recibidos y la FLOW_SECRET_KEY
-    // Luego, si la firma es válida y el estado es exitoso, llamas a otorgarBeneficio.
-    
-    // Ejemplo de cómo se vería la validación de la firma:
-    /*
-    const receivedSignature = req.body.s;
-    const bodyWithoutSignature = { ...req.body };
-    delete bodyWithoutSignature.s;
-    const validSignature = generateFlowSignature(bodyWithoutSignature, FLOW_SECRET_KEY);
-
-    if (receivedSignature !== validSignature) {
-        console.error("❌ Firma de Flow inválida.");
-        return res.status(400).send("Firma inválida"); 
-    }
-    
-    if (req.body.status === '7') { // 7 = Pagado exitoso en Flow
-        // 1. Obtener los datos (uid, email, monto, etc) de tu base de datos si los guardaste con el commerceOrder.
-        // 2. Llamar a otorgarBeneficio(uid, email, monto, 'Flow');
-        console.log(`✅ Pago de Flow confirmado para orden: ${req.body.commerceOrder}`);
-    }
-    */
-
-    console.log("[Flow POST Confirmation] Recibida y firmada. Verificar la lógica de negocio y firma.");
-    res.status(200).send("OK");
-});
+// ❌ Eliminados: /api/flow y /api/flow/confirmation
 
 
 // Endpoint de prueba
 app.get("/", (req, res) => {
+  const creditosMontos = Object.keys(PAQUETES_CREDITOS).map(m => Number(m));
+  const ilimitadoMontos = Object.keys(PLANES_ILIMITADOS).map(m => Number(m));
+  const todosLosMontos = new Set([...creditosMontos, ...ilimitadoMontos]);
+  
   res.json({
     status: "ok",
     firebaseInitialized: !!db,
     githubLogging: !!(GITHUB_TOKEN && GITHUB_REPO),
     HOST_URL_USED: HOST_URL, // Muestra la URL que se está usando
-    flowApiStatus: (FLOW_API_KEY && FLOW_SECRET_KEY) ? "REAL (Sandbox)" : "DESHABILITADO",
+    processor: "MERCADO PAGO (Único)",
+    montos_validos: [...todosLosMontos].sort((a,b) => a-b),
     endpoints_init: {
+      // Endpoint único para todos los pagos con Mercado Pago
       mercadopago_init: `${HOST_URL}/api/init/mercadopago/:amount?uid={uid}&email={email}`,
-      flow_creditos_init: `${HOST_URL}/api/init/flow/creditos/:amount?uid={uid}&email={email}`,
-      flow_ilimitado_init: `${HOST_URL}/api/init/flow/ilimitado/:amount?uid={uid}&email={email}`,
     }
   });
 });
