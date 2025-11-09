@@ -449,6 +449,27 @@ app.get("/", (req, res) => {
 });
 
 // =======================================================
+// ➡️ Endpoints de FALLBACK (Necesarios para que MP retorne correctamente)
+// =======================================================
+// Redirige las URLs de éxito/rechazo/error que Express no reconoce a la raíz
+// para que el frontend (HTML/JS) pueda procesar los parámetros de la URL.
+app.get("/payment/success", (req, res) => {
+  // Mantener los query params (?msg=...) y redirigir a la raíz para que el frontend lo maneje
+  res.redirect(`/${req.url.slice("/payment/success".length)}`);
+});
+
+app.get("/payment/rejected", (req, res) => {
+    // Mantener los query params (?status=...) y redirigir a la raíz
+  res.redirect(`/${req.url.slice("/payment/rejected".length)}`);
+});
+
+app.get("/payment/error", (req, res) => {
+    // Mantener los query params (?msg=...) y redirigir a la raíz
+  res.redirect(`/${req.url.slice("/payment/error".length)}`);
+});
+
+
+// =======================================================
 // 🚀 Servidor
 // =======================================================
 const PORT = process.env.PORT || 8080;
