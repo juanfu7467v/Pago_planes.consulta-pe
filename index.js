@@ -3,7 +3,7 @@ import admin from "firebase-admin";
 import cors from "cors";
 import moment from "moment-timezone"; 
 import axios from "axios"; 
-import crypto from "crypto"; // Lo mantenemos por si acaso, aunque no se use en MP.
+import crypto from "crypto"; 
 
 // Dependencias de Pago
 import { MercadoPagoConfig, Preference } from "mercadopago"; 
@@ -21,6 +21,7 @@ function buildServiceAccountFromEnv() {
       const saRaw = process.env.FIREBASE_SERVICE_ACCOUNT;
       const sa = JSON.parse(saRaw);
       if (sa.private_key && sa.private_key.includes("\\n")) {
+        // Reemplazo para keys con saltos de línea codificados en una variable de entorno
         sa.private_key = sa.private_key.replace(/\\n/g, "\n");
       }
       return sa;
@@ -72,7 +73,7 @@ try {
 const MERCADOPAGO_ACCESS_TOKEN = process.env.MERCADOPAGO_ACCESS_TOKEN;
 
 // URL de Fly.io
-const HOST_URL = process.env.HOST_URL || "https://pago-planes-consulta-pe.fly.dev"; 
+const HOST_URL = process.env.HOST_URL || "http://localhost:8080"; // Fallback a localhost para desarrollo
 
 // Variables de GitHub
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -126,7 +127,9 @@ const PLANES_ILIMITADOS = {
  */
 function calcularCreditosCortesia(numComprasExitosa) {
     const creditosBase = 2;
+    // La cortesía aumenta con el número de compras
     let creditos = creditosBase + numComprasExitosa;
+    // Límite de créditos de cortesía
     return Math.min(creditos, 5); 
 }
 
@@ -136,19 +139,21 @@ function calcularCreditosCortesia(numComprasExitosa) {
 /**
  * Guarda los detalles de la compra en un archivo log en GitHub.
  */
-async function savePurchaseToGithub(uid, email, montoPagado, processor, numCompras) {
+async function savePurchaseToGithub(uid, email, montoPagado, processor, numCompras, paymentRef) {
     if (!GITHUB_TOKEN || !GITHUB_REPO) {
+        // Solo advertimos, no es un error fatal
         console.warn("❌ Guardado en GitHub omitido: Faltan variables de entorno.");
         return;
     }
     
     const githubApiUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/${GITHUB_FILE_PATH}`;
-    const purchaseLog = `${moment().tz("America/Lima").format('YYYY-MM-DD HH:mm:ss')} | UID: ${uid} | Email: ${email} | Monto: S/${montoPagado} | Procesador: ${processor} | Compra #: ${numCompras}\n`;
+    const purchaseLog = `${moment().tz("America/Lima").format('YYYY-MM-DD HH:mm:ss')} | Ref: ${paymentRef} | UID: ${uid} | Email: ${email} | Monto: S/${montoPagado} | Procesador: ${processor} | Compra #: ${numCompras}\n`;
 
     try {
         let sha = null;
         let existingContent = "";
 
+        // 1. Obtener el archivo existente (para obtener el SHA y el contenido)
         try {
             const response = await axios.get(githubApiUrl, {
                 headers: { 'Authorization': `token ${GITHUB_TOKEN}` }
@@ -156,26 +161,28 @@ async function savePurchaseToGithub(uid, email, montoPagado, processor, numCompr
             sha = response.data.sha;
             existingContent = Buffer.from(response.data.content, 'base64').toString('utf8');
         } catch (error) {
-            // Si es un error 404, el archivo no existe, lo creamos después.
+            // Si es un error 404, el archivo no existe, lo creamos sin SHA.
             if (error.response && error.response.status !== 404) {
-                 throw error;
+                 throw error; // Re-lanzar si es otro error de red/GitHub
             }
         }
         
+        // 2. Crear el nuevo contenido y codificarlo
         const newContent = existingContent + purchaseLog;
         const contentBase64 = Buffer.from(newContent, 'utf8').toString('base64');
 
-        const commitMessage = `Log de Compra: ${email} - S/${montoPagado} (${processor})`;
+        const commitMessage = `Log de Compra: ${email} - S/${montoPagado} (${processor}) [Ref: ${paymentRef}]`;
         
+        // 3. Subir el nuevo contenido
         await axios.put(githubApiUrl, {
             message: commitMessage,
             content: contentBase64,
-            sha: sha
+            sha: sha // Si es null, GitHub crea el archivo. Si tiene un valor, actualiza.
         }, {
             headers: { 'Authorization': `token ${GITHUB_TOKEN}` }
         });
 
-        console.log(`✅ Compra de ${email} registrada en GitHub con éxito.`);
+        console.log(`✅ Compra de ${email} registrada en GitHub con éxito. Ref: ${paymentRef}`);
 
     } catch (e) {
         console.error(`❌ Error al guardar en GitHub: ${e.message}`);
@@ -191,48 +198,95 @@ async function savePurchaseToGithub(uid, email, montoPagado, processor, numCompr
 // =======================================================
 /**
  * Otorga el beneficio (créditos o plan) al usuario después de la confirmación de pago.
+ * * @param {string} uid - ID del usuario.
+ * @param {string} email - Email del usuario.
+ * @param {number} montoPagado - Monto de la compra.
+ * @param {string} processor - Procesador de pago (e.g., 'Mercado Pago').
+ * @param {string} paymentRef - Referencia externa de la transacción (CLAVE DE IDEMPOTENCIA).
+ * @returns {object} - Resultado con mensaje y detalles.
  */
-async function otorgarBeneficio(uid, email, montoPagado, processor) {
+async function otorgarBeneficio(uid, email, montoPagado, processor, paymentRef) {
   if (!db) throw new Error("Firestore no inicializado.");
+  
+  // 1. **CLAVE DE IDEMPOTENCIA** - Usar la referencia como ID de un nuevo documento.
+  const pagosRef = db.collection("pagos_registrados");
+  const pagoDoc = pagosRef.doc(paymentRef);
+
+  // Intentamos crear el documento. Si ya existe, significa que el beneficio ya fue otorgado.
+  try {
+    await pagoDoc.create({
+      uid: uid,
+      email: email,
+      monto: montoPagado,
+      processor: processor,
+      fechaRegistro: admin.firestore.FieldValue.serverTimestamp(),
+      estado: "procesando", // Se actualiza a 'exitoso' si la transacción de usuario pasa.
+    });
+  } catch (error) {
+    if (error.code === 6) { // Código 6 en gRPC es ALREADY_EXISTS, lo que significa que ya se procesó.
+      console.warn(`⚠️ IDEMPOTENCIA: Compra ${paymentRef} ya fue procesada anteriormente.`);
+      // Si el pago ya existe, retornamos un mensaje especial para evitar el doble crédito.
+      return {
+        message: {
+          titulo: `✅ Compra ya Procesada (S/${montoPagado})`,
+          cuerpo: `Detectamos que la transacción **${paymentRef}** ya fue procesada y los beneficios otorgados. ¡Gracias por tu paciencia!`,
+        },
+        tipoPlan: 'duplicado',
+        montoPagado,
+      };
+    }
+    // Si es otro error (permisos, etc.), lo lanzamos.
+    throw new Error(`Error al verificar idempotencia: ${error.message}`);
+  }
+
+  // Si llegamos aquí, el documento de pago se creó, podemos proceder a otorgar el beneficio.
 
   const usuariosRef = db.collection("usuarios");
   let userDoc = usuariosRef.doc(uid); 
 
-  const doc = await userDoc.get();
-  if (!doc.exists) throw new Error("Documento de usuario no existe en Firestore.");
+  // Usamos la transacción para asegurar atomicidad
+  const result = await db.runTransaction(async (t) => {
+    // Leemos el documento de usuario DENTRO de la transacción
+    const doc = await t.get(userDoc); 
+    if (!doc.exists) {
+      // Si el usuario no existe, eliminamos el registro de pago y lanzamos error
+      await pagoDoc.delete(); 
+      throw new Error("Documento de usuario no existe en Firestore.");
+    }
 
-  const userDataBefore = doc.data();
-  const creditosAntes = userDataBefore.creditos || 0;
-  const comprasAntes = userDataBefore.numComprasExitosa || 0;
-  
-  // 1. Determinar el beneficio
-  let tipoPlan = "";
-  let creditosComprados = 0;
-  let creditosCortesia = 0;
-  let creditosOtorgadosTotal = 0;
-  let duracionDias = 0;
-  let isCreditos = PAQUETES_CREDITOS[montoPagado];
-  let isIlimitado = PLANES_ILIMITADOS[montoPagado];
-
-
-  if (isCreditos) {
-    tipoPlan = "creditos";
-    creditosComprados = PAQUETES_CREDITOS[montoPagado];
+    const userDataBefore = doc.data();
+    const creditosAntes = userDataBefore.creditos || 0;
+    const comprasAntes = userDataBefore.numComprasExitosa || 0;
     
-    // Lógica de cortesía progresiva
-    creditosCortesia = calcularCreditosCortesia(comprasAntes);
-    
-    creditosOtorgadosTotal = creditosComprados + creditosCortesia;
-  } else if (isIlimitado) {
-    tipoPlan = "ilimitado";
-    duracionDias = PLANES_ILIMITADOS[montoPagado];
-  } else {
-    throw new Error(`Monto de pago S/ ${montoPagado} no coincide con ningún plan válido.`);
-  }
+    // 1. Determinar el beneficio
+    let tipoPlan = "";
+    let creditosComprados = 0;
+    let creditosCortesia = 0;
+    let creditosOtorgadosTotal = 0;
+    let duracionDias = 0;
+    let isCreditos = PAQUETES_CREDITOS[montoPagado];
+    let isIlimitado = PLANES_ILIMITADOS[montoPagado];
 
-  // 2. Aplicar beneficio en una transacción
-  const numComprasNueva = comprasAntes + 1;
-  await db.runTransaction(async (t) => {
+
+    if (isCreditos) {
+      tipoPlan = "creditos";
+      creditosComprados = PAQUETES_CREDITOS[montoPagado];
+      
+      // Lógica de cortesía progresiva
+      creditosCortesia = calcularCreditosCortesia(comprasAntes);
+      
+      creditosOtorgadosTotal = creditosComprados + creditosCortesia;
+    } else if (isIlimitado) {
+      tipoPlan = "ilimitado";
+      duracionDias = PLANES_ILIMITADOS[montoPagado];
+    } else {
+      // Este caso solo debería ocurrir si el monto fue manipulado en el callback
+      await pagoDoc.delete(); 
+      throw new Error(`Monto de pago S/ ${montoPagado} no coincide con ningún plan válido.`);
+    }
+
+    // 2. Aplicar beneficio
+    const numComprasNueva = comprasAntes + 1;
     let updateData = {};
 
     if (tipoPlan === "creditos") {
@@ -242,6 +296,8 @@ async function otorgarBeneficio(uid, email, montoPagado, processor) {
     } else {
       // Lógica de extensión de plan ilimitado
       const fechaActual = moment();
+      // Si ya tiene un plan vigente, la fecha de inicio es la fecha de fin actual.
+      // Si no tiene plan o ya caducó, la fecha de inicio es la actual.
       let fechaFinActual = userDataBefore.fechaFinIlimitado ? moment(userDataBefore.fechaFinIlimitado.toDate()) : fechaActual;
       const fechaInicio = fechaFinActual.isAfter(fechaActual) ? fechaFinActual : fechaActual;
       const fechaFinNueva = fechaInicio.clone().add(duracionDias, 'days');
@@ -257,13 +313,32 @@ async function otorgarBeneficio(uid, email, montoPagado, processor) {
     updateData.ultimaCompraMonto = montoPagado;
     updateData.fechaUltimaCompra = admin.firestore.FieldValue.serverTimestamp();
 
+    // 3. Actualizar el documento de usuario
     t.update(userDoc, updateData);
+    
+    // 4. Devolver datos para el mensaje de éxito
+    return {
+        creditosAntes,
+        creditosOtorgadosTotal,
+        creditosComprados,
+        creditosCortesia,
+        numComprasNueva,
+        tipoPlan,
+        duracionDias,
+        // En un plan ilimitado, necesitamos el dato final. Leemos el documento DENTRO de la transacción
+        // Para planes ilimitados, re-leemos el documento actualizado para obtener la fecha de fin:
+        fechaFinIlimitado: tipoPlan === 'ilimitado' ? fechaFinNueva.toDate() : null
+    }
+
   });
   
-  // 3. Registrar la compra en GitHub (no bloqueante)
-  savePurchaseToGithub(uid, email, montoPagado, processor, numComprasNueva);
+  // 5. Actualizar el estado del pago a exitoso (Fuera de la transacción de usuario)
+  await pagoDoc.update({ estado: "exitoso" });
 
-  // 4. Generar el mensaje profesional
+  // 6. Registrar la compra en GitHub (no bloqueante)
+  savePurchaseToGithub(uid, email, montoPagado, processor, result.numComprasNueva, paymentRef);
+
+  // 7. Generar el mensaje profesional
   let mensaje = {};
   const horaActual = moment.tz("America/Lima");
   let saludoTiempo = "";
@@ -278,37 +353,35 @@ async function otorgarBeneficio(uid, email, montoPagado, processor) {
   }
 
 
-  if (tipoPlan === "creditos") {
-    const totalCreditosFinal = creditosAntes + creditosOtorgadosTotal;
+  if (result.tipoPlan === "creditos") {
+    const totalCreditosFinal = result.creditosAntes + result.creditosOtorgadosTotal;
     
     mensaje.titulo = `Activación Exitosa de Créditos 💳`;
-    mensaje.cuerpo = `Estimada usuario(a) **${email}**, tus **${creditosComprados} créditos** por la compra de **S/${montoPagado}** fueron activados exitosamente 💳.
+    mensaje.cuerpo = `Estimada usuario(a) **${email}**, tus **${result.creditosComprados} créditos** por la compra de **S/${montoPagado}** fueron activados exitosamente 💳.
     
-Además, decidimos premiarte con **${creditosCortesia} créditos extra de regalo** 🎁, porque los buenos usuarios siempre se notan 😉. (¡Es tu compra #${numComprasNueva}!)
+Además, decidimos premiarte con **${result.creditosCortesia} créditos extra de regalo** 🎁, porque los buenos usuarios siempre se notan 😉. (¡Es tu compra #${result.numComprasNueva}!)
     
-En total ahora tienes **${totalCreditosFinal} créditos**, incluyendo los **${creditosAntes}** que ya tenías en tu cuenta.
+En total ahora tienes **${totalCreditosFinal} créditos**, incluyendo los **${result.creditosAntes}** que ya tenías en tu cuenta.
     
 Disfrútalos, te los ganaste 😌✨
 (El equipo de Consulta PE te desea una excelente ${saludoTiempo})`;
   } else {
     // Si es plan ilimitado
-    const docAfter = await userDoc.get();
-    const userDataAfter = docAfter.data();
-    const fechaFin = moment(userDataAfter.fechaFinIlimitado.toDate()).tz("America/Lima").format("DD/MM/YYYY [a las] HH:mm");
+    const fechaFin = moment(result.fechaFinIlimitado).tz("America/Lima").format("DD/MM/YYYY [a las] HH:mm");
     
     mensaje.titulo = `Plan Ilimitado Activado 🎉`;
-    mensaje.cuerpo = `Estimada usuario(a) **${email}**, tu **Plan Ilimitado** por **${duracionDias} días** (compra de S/${montoPagado}) ha sido activado/extendido exitosamente.
+    mensaje.cuerpo = `Estimada usuario(a) **${email}**, tu **Plan Ilimitado** por **${result.duracionDias} días** (compra de S/${montoPagado}) ha sido activado/extendido exitosamente.
     
 Tu acceso ilimitado está garantizado hasta el **${fechaFin}**. ¡Aprovecha al máximo! 🚀
     
-Tus **${creditosAntes}** créditos restantes siguen disponibles. (¡Es tu compra #${numComprasNueva}!)
+Tus **${result.creditosAntes}** créditos restantes siguen disponibles. (¡Es tu compra #${result.numComprasNueva}!)
     
 (El equipo de Consulta PE te desea una excelente ${saludoTiempo})`;
   }
   
   return {
     message: mensaje,
-    tipoPlan,
+    tipoPlan: result.tipoPlan,
     montoPagado,
   };
 }
@@ -325,6 +398,7 @@ async function createMercadoPagoPreference(amount, uid, email, description) {
     throw new Error("Mercado Pago SDK no configurado. Falta Access Token.");
   }
   
+  // Usamos un identificador único que será la CLAVE DE IDEMPOTENCIA
   const externalReference = `MP-${uid}-${Date.now()}`;
   const preference = new Preference(mpClient); 
 
@@ -334,12 +408,13 @@ async function createMercadoPagoPreference(amount, uid, email, description) {
       payer: { email: email },
       // Usa HOST_URL para las URLs de retorno
       back_urls: {
+        // MUY IMPORTANTE: Pasamos el 'ref' (externalReference) en el callback para usarlo como CLAVE DE IDEMPOTENCIA
         success: `${HOST_URL}/api/mercadopago?monto=${amount}&uid=${uid}&email=${email}&estado=approved&ref=${externalReference}`,
         failure: `${HOST_URL}/api/mercadopago?monto=${amount}&uid=${uid}&email=${email}&estado=rejected&ref=${externalReference}`,
         pending: `${HOST_URL}/api/mercadopago?monto=${amount}&uid=${uid}&email=${email}&estado=pending&ref=${externalReference}`,
       },
       auto_return: "approved",
-      external_reference: externalReference,
+      external_reference: externalReference, // Mercado Pago también usa esto para sus notificaciones
       payment_methods: { installments: 1 },
     }
   });
@@ -407,15 +482,20 @@ app.get("/api/init/mercadopago/:amount", async (req, res) => {
 // ➡️ Mercado Pago (Recibe estado final del pago)
 app.get("/api/mercadopago", async (req, res) => {
   // Nota: MP puede enviar notificaciones por GET o POST. Este es el callback de retorno del usuario (GET).
-  const { uid, email, monto, estado } = req.query;
+  // Agregamos 'ref' (la referencia externa, nuestra clave de idempotencia)
+  const { uid, email, monto, estado, ref } = req.query; 
 
   try {
-    if (!email || !uid || !monto) return res.redirect("/payment/error?msg=Faltan_datos_en_el_callback");
+    if (!email || !uid || !monto || !ref) {
+      console.error("Faltan datos en el callback:", req.query);
+      return res.redirect("/payment/error?msg=Faltan_datos_en_el_callback");
+    }
     
     if (estado !== "approved") return res.redirect(`/payment/rejected?status=${estado}`); 
 
     // Otorga el beneficio SOLO si el estado es 'approved'
-    const result = await otorgarBeneficio(uid, email, Number(monto), 'Mercado Pago');
+    // Pasamos la 'ref' para la verificación de idempotencia
+    const result = await otorgarBeneficio(uid, email, Number(monto), 'Mercado Pago', ref);
     
     const encodedMessage = encodeURIComponent(JSON.stringify(result.message));
     res.redirect(`/payment/success?msg=${encodedMessage}`);
@@ -452,5 +532,5 @@ app.get("/", (req, res) => {
 // 🚀 Servidor
 // =======================================================
 const PORT = process.env.PORT || 8080;
+// Escuchar en 0.0.0.0 es una buena práctica en entornos de contenedores (como Fly.io)
 app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Servidor corriendo en puerto ${PORT} usando HOST_URL: ${HOST_URL}`));
-
