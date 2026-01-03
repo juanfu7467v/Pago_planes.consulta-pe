@@ -174,15 +174,19 @@ async function savePurchaseToGithub(uid, email, montoPagado, processor, numCompr
         const commitMessage = `Log de Compra: ${email} - S/${montoPagado} (${processor}) [Ref: ${paymentRef}]`;
         
         // 3. Subir el nuevo contenido
-        await axios.put(githubApiUrl, {
+        console.log(`Intentando subir log a GitHub para ${email}...`);
+        const putResponse = await axios.put(githubApiUrl, {
             message: commitMessage,
             content: contentBase64,
             sha: sha // Si es null, GitHub crea el archivo. Si tiene un valor, actualiza.
         }, {
-            headers: { 'Authorization': `token ${GITHUB_TOKEN}` }
+            headers: { 
+                'Authorization': `token ${GITHUB_TOKEN}`,
+                'Accept': 'application/vnd.github.v3+json'
+            }
         });
 
-        console.log(`✅ Compra de ${email} registrada en GitHub con éxito. Ref: ${paymentRef}`);
+        console.log(`✅ Compra de ${email} registrada en GitHub con éxito. Ref: ${paymentRef}. Status: ${putResponse.status}`);
 
     } catch (e) {
         console.error(`❌ Error al guardar en GitHub: ${e.message}`);
@@ -206,6 +210,7 @@ async function savePurchaseToGithub(uid, email, montoPagado, processor, numCompr
  * @returns {object} - Resultado con mensaje y detalles.
  */
 async function otorgarBeneficio(uid, email, montoPagado, processor, paymentRef) {
+  console.log(`Iniciando otorgarBeneficio para ${email} (UID: ${uid}), Monto: ${montoPagado}, Ref: ${paymentRef}`);
   if (!db) throw new Error("Firestore no inicializado.");
   
   // 1. **CLAVE DE IDEMPOTENCIA** - Usar la referencia como ID de un nuevo documento.
@@ -257,6 +262,7 @@ async function otorgarBeneficio(uid, email, montoPagado, processor, paymentRef) 
     const userDataBefore = doc.data();
     const creditosAntes = userDataBefore.creditos || 0;
     const comprasAntes = userDataBefore.numComprasExitosa || 0;
+    console.log(`Usuario ${email} antes: créditos=${creditosAntes}, compras=${comprasAntes}`);
     
     // 1. Determinar el beneficio
     let tipoPlan = "";
@@ -275,7 +281,7 @@ async function otorgarBeneficio(uid, email, montoPagado, processor, paymentRef) 
       // Lógica de cortesía progresiva
       creditosCortesia = calcularCreditosCortesia(comprasAntes);
       
-      creditosOtorgadosTotal = creditosComprados + creditosCortesia;
+      creditosOtorgadosTotal = Number(creditosComprados) + Number(creditosCortesia);
     } else if (isIlimitado) {
       tipoPlan = "ilimitado";
       duracionDias = PLANES_ILIMITADOS[montoPagado];
@@ -290,8 +296,8 @@ async function otorgarBeneficio(uid, email, montoPagado, processor, paymentRef) 
     let updateData = {};
 
     if (tipoPlan === "creditos") {
-      updateData.creditos = creditosAntes + creditosOtorgadosTotal;
-      updateData.ultimaCompraCreditos = creditosOtorgadosTotal;
+      updateData.creditos = Number(creditosAntes) + Number(creditosOtorgadosTotal);
+      updateData.ultimaCompraCreditos = Number(creditosOtorgadosTotal);
       updateData.tipoPlan = 'creditos_paquete';
     } else {
       // Lógica de extensión de plan ilimitado
@@ -314,6 +320,7 @@ async function otorgarBeneficio(uid, email, montoPagado, processor, paymentRef) 
     updateData.fechaUltimaCompra = admin.firestore.FieldValue.serverTimestamp();
 
     // 3. Actualizar el documento de usuario
+    console.log(`Actualizando usuario ${email} con:`, JSON.stringify(updateData));
     t.update(userDoc, updateData);
     
     // 4. Devolver datos para el mensaje de éxito
@@ -336,7 +343,10 @@ async function otorgarBeneficio(uid, email, montoPagado, processor, paymentRef) 
   await pagoDoc.update({ estado: "exitoso" });
 
   // 6. Registrar la compra en GitHub (no bloqueante)
-  savePurchaseToGithub(uid, email, montoPagado, processor, result.numComprasNueva, paymentRef);
+  // Aseguramos que se intente registrar incluso si hay retrasos
+  savePurchaseToGithub(uid, email, montoPagado, processor, result.numComprasNueva, paymentRef).catch(err => {
+    console.error("Error en segundo plano al guardar en GitHub:", err.message);
+  });
 
   // 7. Generar el mensaje profesional
   let mensaje = {};
